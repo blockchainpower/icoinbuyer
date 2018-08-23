@@ -9,12 +9,22 @@ contract ExtendUIntArray {
         return (array[index]);
     }
     
+    function getAll() public view returns(uint256[]) {
+        return array;
+    }
+    
     function getLength() public view returns(uint256) {
         return (array.length);
     }
     
     function push(uint256 value) public {
         array.push(value);
+    }
+    
+    function pushAll(uint256[] _array) public {
+        for (uint i = 0; i < _array.length; ++i) {
+            push(_array[i]);
+        }
     }
     
     function indexOf(uint256 value) public view returns(int) {
@@ -48,6 +58,13 @@ contract ExtendUIntArray {
         }
         array.length -= length;
     }
+    
+    function clear() public {
+        for (uint i = 0; i < array.length; ++i)  {
+            delete array[i];
+        }
+        array.length = 0;
+    }
 }
 
 contract TradeRequestManager {
@@ -73,9 +90,9 @@ contract TradeRequestManager {
         buyRequestNumQueue = new ExtendUIntArray();
         saleRequestNumQueue = new ExtendUIntArray();
     }
-
+    
     function matchRequest(address customer, uint256 requestCount, TradeDirection direction) 
-        public returns (address[] successAddress, uint256[] successCount) {
+        public returns (address[], uint256[]) {
         require(customer != address(0));
         require(0 != requestCount);
         
@@ -86,13 +103,18 @@ contract TradeRequestManager {
         if (direction == TradeDirection.SALE) {
             reverseList = buyRequestNumQueue;
         }
-
+        
+        uint256 length = reverseList.getLength();
+        
+        address[] memory successAddress = new address[](length);
+        uint256[] memory successCount = new uint256[](length);
+        
         uint256 successLength = 0;
-        for (uint i = 0; i < reverseList.getLength(); ++i) {
+        for (uint i = 0; i < length; ++i) {
             uint256 requestNum = reverseList.get(i);
             TradeRequest storage request = tradeRequestMapping[requestNum];
             
-            if (request.customer == msg.sender) continue;
+            if (request.customer == customer) continue;
             
             successAddress[i] = request.customer;
             if (request.requestCount > requestCount) {
@@ -111,6 +133,8 @@ contract TradeRequestManager {
         }
         reverseList.remove(0, successLength);
         addTradeRequest(customer, requestCount, direction);
+        
+        return (successAddress, successCount);
     }
     
     function addTradeRequest(address customer, uint256 requestCount, 
@@ -120,7 +144,7 @@ contract TradeRequestManager {
         uint256 requestNum = generateNextRequestNumber();
         TradeRequest memory tradeRequest = TradeRequest(
                 requestNum,
-                msg.sender,
+                customer,
                 direction,
                 requestCount);
                 
@@ -140,10 +164,36 @@ contract TradeRequestManager {
         customerList.push(requestNum);
     }
     
+    function pullWaitingToDelay() public {
+        
+        pullWaitingToDelay(buyRequestNumQueue.getAll());
+        buyRequestNumQueue.clear();
+        
+        pullWaitingToDelay(saleRequestNumQueue.getAll());
+        saleRequestNumQueue.clear();
+    }
+    
+    function pullWaitingToDelay(uint256[] requestNumArray) private {
+         for (uint256 i = 0; i < requestNumArray.length; ++i) {
+            TradeRequest storage tradeRequest = tradeRequestMapping[requestNumArray[i]];
+            
+            ExtendUIntArray waitingNumArray = customerWaitingRequestNumMapping[tradeRequest.customer];
+            if (waitingNumArray == address(0)) continue;
+            
+            ExtendUIntArray delayNumArray = customerDelayRequestNumMapping[tradeRequest.customer];
+            
+            if (delayNumArray == address(0)) {
+                customerDelayRequestNumMapping[tradeRequest.customer] = waitingNumArray;
+            } else {
+                delayNumArray.pushAll(waitingNumArray.getAll());
+                customerDelayRequestNumMapping[tradeRequest.customer] = delayNumArray;
+            }
+            delete customerWaitingRequestNumMapping[tradeRequest.customer];
+        }
+    }
+    
     function getCustomerAllRequestWithType(address customer, TradeRequestType requestType) public 
-        view returns(uint256[] customerRequestNumList, TradeDirection[] customerDirectionList, 
-        uint256[] customerRequestCountList) {
-        require(customer != address(0));
+        view returns(uint256[], TradeDirection[] , uint256[]) {
         
         ExtendUIntArray customerList;
         if (requestType == TradeRequestType.WAITING) {
@@ -154,7 +204,11 @@ contract TradeRequestManager {
         }
         require(customerList != address(0));
         
-        uint length = customerList.getLength();
+        uint256 length = customerList.getLength();
+        
+        uint256[] memory customerRequestNumList = new uint256[](length);
+        TradeDirection[] memory customerDirectionList = new TradeDirection[](length); 
+        uint256[] memory customerRequestCountList = new uint256[](length);
         
         for (uint i = 0; i < length; ++i) {
             TradeRequest storage tradeRequest = tradeRequestMapping[customerList.get(i)];
@@ -162,11 +216,11 @@ contract TradeRequestManager {
             customerDirectionList[i] = tradeRequest.direction;
             customerRequestCountList[i] = tradeRequest.requestCount;
         }
+        return (customerRequestNumList, customerDirectionList, customerRequestCountList);
     }
         //customer close waiting request
     function closeOneRequest(address customer, uint256 requestNum, 
-        TradeRequestType requestType) public returns(uint256 requestCount, 
-        TradeDirection direction) {
+        TradeRequestType requestType) public returns(uint256, TradeDirection) {
         require(0 != requestNum);
         require(customer != address(0));
         
@@ -180,13 +234,17 @@ contract TradeRequestManager {
         
         require(customerList!= address(0));
         
+        uint256 requestCount;
+        TradeDirection direction;
         (requestCount, direction) = requestSetClose(customer, requestNum, requestType);
        
         customerList.removeByValue(requestNum);
+        
+        return (requestCount, direction);
     }
     
     function closeAllRequest(address customer, TradeRequestType requestType) 
-        public returns(uint256[] requestCountArray, TradeDirection[] directionArray) {
+        public returns(uint256[], TradeDirection[]) {
         require(customer != address(0));
         
         ExtendUIntArray customerList;
@@ -198,25 +256,29 @@ contract TradeRequestManager {
         } 
         require(customerList != address(0));
         
-        for (uint256 i = 0; i < customerList.getLength(); ++i) {
+        uint256 length = customerList.getLength();
+        uint256[] memory requestCountArray = new uint256[](length); 
+        TradeDirection[] memory directionArray = new TradeDirection[](length);
+        for (uint256 i = 0; i < length; ++i) {
             (requestCountArray[i], directionArray[i])= requestSetClose(customer, customerList.get(i), requestType);
         }
         delete customerWaitingRequestNumMapping[customer];
+        return (requestCountArray, directionArray);
     }
     
     function requestSetClose(address customer, uint256 requestNum, 
-        TradeRequestType requestType) private returns(uint256 requestCount, 
-        TradeDirection direction) {
+        TradeRequestType requestType) private returns(uint256, TradeDirection) {
         TradeRequest storage tradeRequest = tradeRequestMapping[requestNum];
         require(tradeRequest.customer == customer);
         
-        requestCount = tradeRequest.requestCount;
-        direction = tradeRequest.direction;
+        uint256 requestCount = tradeRequest.requestCount;
+        TradeDirection direction = tradeRequest.direction;
         
         if (requestType == TradeRequestType.WAITING) {
             removeFromRequestQueue(tradeRequest.direction, requestNum);
         }
         delete tradeRequestMapping[requestNum];
+        return (requestCount, direction);
     }
     
     function removeFromRequestQueue(TradeDirection direction, uint256 requestNum) private {
@@ -339,14 +401,17 @@ contract TradeOrderManager {
         customerArray.push(orderNum);
     }
     
-    function getCustomerTradeOrder(address customer) public view returns(uint256[] customerOrderNumList, 
-        uint256[] customerShareCountList, uint256[] customerWeiList) {
-        require(customer != address(0));
+    function getCustomerTradeOrder(address customer) public view returns(uint256[], uint256[], uint256[]) {
         
         ExtendUIntArray tradeOrderNumList = customerTradeOrderNumListMapping[customer];
         require(tradeOrderNumList != address(0));
         
-        for (uint i = 0; i < tradeOrderNumList.getLength(); ++i) {
+        uint256 length = tradeOrderNumList.getLength();
+        uint256[] memory customerOrderNumList = new uint256[](length);
+        uint256[] memory customerShareCountList = new uint256[](length);
+        uint256[] memory customerWeiList = new uint256[](length);
+        
+        for (uint i = 0; i < length; ++i) {
             TradeOrder storage tradeOrder = tradeOrderMapping[tradeOrderNumList.get(i)];
             customerOrderNumList[i] = tradeOrder.orderNum;
             customerShareCountList[i] = tradeOrder.shareCount;
@@ -357,26 +422,36 @@ contract TradeOrderManager {
                 customerWeiList[i] = tradeOrder.saleWei;
             }
         }
+        return (customerOrderNumList, customerShareCountList, customerWeiList);
     }
     
-    function closeAllOrder(address customer) public returns(uint256 balance) {
+    function closeAllOrder(address customer) public returns(uint256, uint256[]) {
         require(customer != address(0));
         
         ExtendUIntArray customerOrderNumList = customerTradeOrderNumListMapping[customer];
         require(customerOrderNumList != address(0));
         
-        for (uint i = 0; i < customerOrderNumList.getLength(); ++i) {
-            balance += orderSetClose(customer, customerOrderNumList.get(i));
+        uint256 length = customerOrderNumList.getLength();
+        uint256 balance = 0;
+        uint256[] memory orderNumArray = new uint256[](length);
+        
+        for (uint i = 0; i < length; ++i) {
+            uint256 orderNum = customerOrderNumList.get(i);
+            orderNumArray[i] = orderNum;
+            balance += orderSetClose(customer, orderNum);
         }
         delete customerTradeOrderNumListMapping[customer];
+        return (balance, orderNumArray);
     }
     
-    function closeOneOrder(address customer, uint256 orderNum) public returns(uint256 balance) {
+    function closeOneOrder(address customer, uint256 orderNum) public returns(uint256, uint256) {
         require(0 < orderNum);
         require(customer != address(0));
         
+        uint256 balance = 0;
         balance = orderSetClose(customer, orderNum);
         closeOneCustomerTradeOrderNum(customer, orderNum);
+        return (balance, orderNum);
     }
     
     function closeOneCustomerTradeOrderNum(address customer, uint256 orderNum) private {
@@ -388,10 +463,11 @@ contract TradeOrderManager {
         }
     }
     
-    function orderSetClose(address customer, uint256 orderNum) private returns(uint256 balance) {
+    function orderSetClose(address customer, uint256 orderNum) private returns(uint256) {
         TradeOrder storage tradeOrder = tradeOrderMapping[orderNum];
         require(0 < tradeOrder.orderNum);
         
+        uint256 balance;
         if (tradeOrder.buyer == customer && !tradeOrder.buyerWithdraw) {
             tradeOrder.buyerWithdraw = true;
             balance = tradeOrder.buyWei;
@@ -406,6 +482,7 @@ contract TradeOrderManager {
             orderNumList.remove(tradeOrder.index, 1);
             delete tradeOrderMapping[orderNum];
         }
+        return balance;
     }
     
     function generateNextOrderNumber() private returns(uint256) {
@@ -413,20 +490,29 @@ contract TradeOrderManager {
     }
 }
 
+
 contract EthBitcoinTradeContract {
     
+    event CloseOneOrder(address addr, uint256 orderNum);
     event FallbackError(address addr, bytes data);
+    event TradeCallback(uint256 requestCount, uint256 orderCount);
+    event CloseAllOrder(address addr, uint256[] orderNumArray);
     
     uint256 public constant TRADE_UNIT = 10000000000000000;   //unit:wei, = 0.01 ethe
     
-    uint8 public tradeStartHour;
-    uint8 public tradeEndHour;
+    uint8 public constant TRADE_START_HOUR = 9;
+    uint8 public constant TRADE_END_HOUR = 4;
     
     address public adminAddress;
     address public benefitAddress;
     
     uint256 public updateTime;
-    uint256 public currentPrice;
+    uint256 public oldPrice;
+    uint256 public newPrice;
+    
+    uint256 public auctionCount;
+    uint256 public buyCount;
+    uint256 public sellCount;
     
     TradeOrderManager tradeOrderManager;
     TradeRequestManager tradeRequestManager;
@@ -439,10 +525,15 @@ contract EthBitcoinTradeContract {
         
         tradeOrderManager = new TradeOrderManager();
         tradeRequestManager = new TradeRequestManager();
+        
+        // customerWalletMapping[msg.sender] = 1000000000000000000;
+        // address addr = address(0x14723a09acff6d2a60dcdf7aa4aff308fddc160c);
+        // customerWalletMapping[addr] = 2000000000000000000;
     }
     
     function() public payable {
         emit FallbackError(msg.sender, msg.data);
+        revert();
     }
     
     modifier onlyAdmin() {
@@ -452,16 +543,8 @@ contract EthBitcoinTradeContract {
     
     modifier tradeTime() {
         uint8 currentHour = getCurrentHour();
-        require(tradeStartHour <= currentHour);
-        require(tradeEndHour > currentHour);
+        require(TRADE_START_HOUR <= currentHour || TRADE_END_HOUR > currentHour);
         _;
-    }
-    
-    function changeTradeTime(uint8 start, uint8 end) public onlyAdmin {
-        require(end > start);
-        require(end > 0);
-        tradeStartHour = start;
-        tradeEndHour = end;
     }
     
     function changeAdminAddress(address _addr) public onlyAdmin {
@@ -475,26 +558,47 @@ contract EthBitcoinTradeContract {
     }
     
     function updatePrice(uint256 _price, uint256 _time) public onlyAdmin {
+        require(_price != 0);
         updateTime = _time;
-        if (_price == currentPrice) return;
-        bool raise = _price > currentPrice;
+        newPrice = _price;
+        
+        if (oldPrice == 0) {
+            oldPrice = _price;
+        }
+    }
+    
+    function confirmPrice() public onlyAdmin {
+        require(oldPrice != newPrice);
+        require(newPrice != 0);
+        require(oldPrice != 0);
+        
+        bool raise = newPrice > oldPrice;
         
         address[] memory addressArray;
         uint256[] memory weiArray;
         (addressArray, weiArray) = tradeOrderManager.updateOrderPrice(raise, 
-            raise ? _price - currentPrice : currentPrice - _price);
+            raise ? newPrice - oldPrice : oldPrice - newPrice);
         for (uint256 i = 0; i < weiArray.length; ++i) {
-            addCustomerBalance(addressArray[i], weiArray[i]);
+            uint256 explodeWei = weiArray[i];
+            if (explodeWei == 0) continue;
+            addCloseOrderBalance(addressArray[i], explodeWei);
         }
         
+        tradeRequestManager.pullWaitingToDelay();
+        
+        oldPrice = newPrice;
+        newPrice = 0;
+        auctionCount = 0;
+        buyCount = 0;
+        sellCount = 0;
     }
     
     function payWithTransfer(TradeRequestManager.TradeDirection direction) 
         public payable tradeTime {
         require(0 != msg.value);
+        
         uint256 requestCount = msg.value / TRADE_UNIT;
         trade(requestCount, direction);
-        
         addCustomerBalance(msg.sender, msg.value % TRADE_UNIT);
     }
     
@@ -505,14 +609,25 @@ contract EthBitcoinTradeContract {
         trade(requestCount, direction);
     }
     
+    event TradeResult(address[] addressArray, uint256[] successCountArray);
+    
     function trade(uint256 requestCount, TradeRequestManager.TradeDirection direction) private {
         require(0 != requestCount);
+
+        if (TradeRequestManager.TradeDirection.BUY == direction) {
+            buyCount += requestCount;
+        }
+        if (TradeRequestManager.TradeDirection.SALE == direction) {
+            sellCount += requestCount;
+        }
+        
         address[] memory addressArray;
         uint256[] memory successCountArray;
         
         (addressArray, successCountArray) = tradeRequestManager.matchRequest(msg.sender, 
-            requestCount, TradeRequestManager.TradeDirection.SALE);
-        
+            requestCount, direction);
+            
+        uint256 totalSuccessCount = 0;
         for (uint256 i = 0; i < successCountArray.length; ++i) {
             uint256 successCount = successCountArray[i];
             if (successCount == 0) break;
@@ -522,15 +637,33 @@ contract EthBitcoinTradeContract {
             if (TradeRequestManager.TradeDirection.SALE == direction) {
                 tradeOrderManager.push(addressArray[i], msg.sender, successCount, TRADE_UNIT);
             }
+            totalSuccessCount += successCount;
+
         }
+        auctionCount += totalSuccessCount;
+        emit TradeCallback(requestCount - totalSuccessCount, totalSuccessCount);
     }
     
     function closeOneOrder(uint256 orderNum) public tradeTime {
-        addCustomerBalance(msg.sender, tradeOrderManager.closeOneOrder(msg.sender, orderNum));
+        uint256 balance;
+        uint256 _orderNum;
+        (balance, _orderNum) = tradeOrderManager.closeOneOrder(msg.sender, orderNum);
+        addCloseOrderBalance(msg.sender, balance);
+        emit CloseOneOrder(msg.sender, _orderNum);
     }
     
     function closeAllOrder() public tradeTime {
-        addCustomerBalance(msg.sender, tradeOrderManager.closeAllOrder(msg.sender));
+        uint256 balance;
+        uint256[] memory orderNumArray;
+        (balance, orderNumArray) = tradeOrderManager.closeAllOrder(msg.sender);
+        addCloseOrderBalance(msg.sender, balance);
+        emit CloseAllOrder(msg.sender, orderNumArray);
+    }
+    
+    function addCloseOrderBalance(address customer, uint256 balance) private {
+        uint256 benefitWei = balance / 1000 / 2;
+        addCustomerBalance(benefitAddress, benefitWei);
+        addCustomerBalance(customer, balance - benefitWei);
     }
     
     function closeOneRequest(uint256 requestNum, TradeRequestManager.TradeRequestType requestType) public tradeTime {
@@ -539,6 +672,8 @@ contract EthBitcoinTradeContract {
         (requestCount, direction) = tradeRequestManager.closeOneRequest(msg.sender, 
             requestNum, requestType);
         addCustomerBalance(msg.sender, requestCount * TRADE_UNIT);
+        
+        cutRequestCount(requestCount, direction);
     }
     
     function closeAllRequest(TradeRequestManager.TradeRequestType requestType) public tradeTime {
@@ -548,9 +683,21 @@ contract EthBitcoinTradeContract {
             requestType);
         uint256 totalRequestCount;
         for (uint256 i = 0; i < requestCountArray.length; ++i) {
-            totalRequestCount += requestCountArray[i];
+            uint256 requestCount = requestCountArray[i];
+            totalRequestCount += requestCount;
+            
+            cutRequestCount(requestCount, directionArray[i]);
         }
         addCustomerBalance(msg.sender, totalRequestCount * TRADE_UNIT);
+    }
+    
+    function cutRequestCount(uint256 requestCount, TradeRequestManager.TradeDirection direction) public {
+        if (TradeRequestManager.TradeDirection.BUY == direction) {
+            buyCount -= requestCount;
+        }
+        if (TradeRequestManager.TradeDirection.SALE == direction) {
+            sellCount -= requestCount;
+        }
     }
     
     function rewaitingOneTradeRequest(uint256 requestNum) public tradeTime {
@@ -574,7 +721,7 @@ contract EthBitcoinTradeContract {
     
     function getCustomerAllRequestWithType(TradeRequestManager.TradeRequestType requestType) public 
         view returns(uint256[], TradeRequestManager.TradeDirection[], uint256[]) {
-        return tradeRequestManager.getCustomerAllRequestWithType(msg.sender, requestType);       
+        return tradeRequestManager.getCustomerAllRequestWithType(msg.sender, requestType);
     }
     
     function getCustomerAllTradeOrder() public view returns(uint256[], uint256[], uint256[]) {
@@ -599,7 +746,8 @@ contract EthBitcoinTradeContract {
         msg.sender.transfer(balance);
     }
     
-    function getCurrentHour() private view returns(uint8) {
+    function getCurrentHour() public view returns(uint8) {
         return (uint8((now / 60 / 60) % 24) + 8) % 24;   //UTC/GMT+08:00
     }
+    
 }
